@@ -4,7 +4,87 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Order Management</title>
-    <link rel="stylesheet" href="styles.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+
+        header {
+            background-color: #333;
+            color: white;
+            padding: 1em;
+            display: flex;
+            align-items: center;
+        }
+
+        header img {
+            width: 50px;
+            height: 50px;
+            margin-right: 10px;
+        }
+
+        header h1 {
+            margin: 0;
+        }
+
+        nav {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        main {
+            padding: 20px;
+        }
+
+        .orderCard {
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+
+        .orderCard button {
+            margin-top: 10px;
+            padding: 5px 10px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .orderCard button:hover {
+            background-color: #218838;
+        }
+
+        #videoContainer {
+            display: none;
+            text-align: center;
+        }
+
+        video {
+            width: 100%;
+            max-width: 500px;
+            border: 2px solid #ccc;
+        }
+
+        canvas {
+            display: none;
+        }
+
+        footer {
+            text-align: center;
+            padding: 10px;
+            background-color: #333;
+            color: white;
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+        }
+    </style>
 </head>
 <body>
     <header>
@@ -28,13 +108,19 @@
         </section>
 
         <section id="dashboard" style="display: none;">
-            <h2 id="welcomeMessage">Welcome, <span id="userName"></span>! Vehicle: <span id="vehicleType"></span></h2>
-            <div id="locationDetails">
-                <p>Latitude: <span id="latitude"></span></p>
-                <p>Longitude: <span id="longitude"></span></p>
+            <h2 id="welcomeMessage">Welcome, <span id="userName"></span>!</h2>
+            <div id="acceptedOrdersContainer">
+                <h3>Accepted Orders</h3>
+                <div id="acceptedOrders"></div>
             </div>
-            <div id="orderContainer"></div>
-            <div id="statusMessage"></div>
+        </section>
+
+        <section id="videoContainer">
+            <h3>Scan QR Code</h3>
+            <video id="videoElement" autoplay></video>
+            <canvas id="canvasElement"></canvas>
+            <p id="outputElement"></p>
+            <button id="stopScanButton">Stop Scan</button>
         </section>
     </main>
 
@@ -44,7 +130,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-        import { getFirestore, doc, getDoc, updateDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyD4_h-2b2_IjrfvSKOxHrL9gWotG-SanFo",
@@ -59,13 +145,19 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
-        document.addEventListener('DOMContentLoaded', () => {
-            const loginForm = document.getElementById('loginForm');
-            const orderContainer = document.getElementById('orderContainer');
-            const statusMessage = document.getElementById('statusMessage');
-            let currentUserEmail = '';
+        let videoElement, canvasElement, canvasContext, outputElement, scanAnimationFrame;
 
-            // Login Handler
+        document.addEventListener('DOMContentLoaded', () => {
+            videoElement = document.getElementById('videoElement');
+            canvasElement = document.getElementById('canvasElement');
+            canvasContext = canvasElement.getContext('2d');
+            outputElement = document.getElementById('outputElement');
+
+            const loginForm = document.getElementById('loginForm');
+            const acceptedOrdersContainer = document.getElementById('acceptedOrders');
+            const videoContainer = document.getElementById('videoContainer');
+            const stopScanButton = document.getElementById('stopScanButton');
+
             loginForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 const email = document.getElementById('loginEmail').value;
@@ -76,159 +168,94 @@
                     const userDoc = await getDoc(userRef);
 
                     if (userDoc.exists() && userDoc.data().password === password) {
-                        currentUserEmail = email;
                         const userData = userDoc.data();
-
                         document.getElementById('userName').textContent = userData.partnerName;
-                        document.getElementById('vehicleType').textContent = userData.vehicleType;
                         document.getElementById('loginSection').style.display = 'none';
                         document.getElementById('dashboard').style.display = 'block';
 
-                        fetchLocation(userData.partnerName);
+                        displayAcceptedOrders(userData.ordersAccepted || {});
                     } else {
-                        displayStatus('Invalid email or password.', 'error');
+                        alert('Invalid email or password.');
                     }
                 } catch (error) {
                     console.error('Login error:', error);
-                    displayStatus('Login failed. Please try again.', 'error');
+                    alert('Login failed. Please try again.');
                 }
             });
 
-            // Fetch Orders
-            async function fetchOrders(latitude, longitude) {
-                orderContainer.innerHTML = '';
-                try {
-                    const ordersSnap = await getDocs(collection(db, 'orders'));
+            stopScanButton.addEventListener('click', stopCamera);
 
-                    if (ordersSnap.empty) {
-                        displayStatus('No orders available.', 'info');
-                        return;
-                    }
+            function displayAcceptedOrders(ordersAccepted) {
+                acceptedOrdersContainer.innerHTML = '';
+                if (Object.keys(ordersAccepted).length === 0) {
+                    acceptedOrdersContainer.innerHTML = '<p>No accepted orders found.</p>';
+                    return;
+                }
 
-                    ordersSnap.forEach((docSnap) => {
-                        const order = docSnap.data();
-                        const orderId = docSnap.id;
+                for (const [orderId, orderDetails] of Object.entries(ordersAccepted)) {
+                    const orderCard = document.createElement('div');
+                    orderCard.className = 'orderCard';
 
-                        const distance = calculateDistance(
-                            latitude, longitude,
-                            order.latitude, order.longitude
-                        );
-
-                        if (distance <= 2) {
-                            const orderCard = document.createElement('div');
-                            orderCard.className = 'orderCard';
-                            orderCard.innerHTML = `
-                                <h3>Order ID: ${orderId}</h3>
-                                <p>Total: ₹${order.total || 0}</p>
-                                <p>Address: ${order.address || 'Not provided'}</p>
-                                <p>Distance: ${distance.toFixed(2)} km</p>
-                                <button class="acceptBtn" data-id="${orderId}">Accept Order</button>
-                            `;
-                            orderContainer.appendChild(orderCard);
-                        }
+                    orderCard.innerHTML = `
+                        <strong>Order ID:</strong> ${orderId} <br>
+                        <button class="scanOrderButton">Scan Order</button>
+                    `;
+                    orderCard.querySelector('.scanOrderButton').addEventListener('click', () => {
+                        startCamera(orderId);
                     });
 
-                    setupAcceptOrderHandlers();
-                } catch (error) {
-                    console.error('Error fetching orders:', error);
-                    displayStatus('Failed to load orders.', 'error');
+                    acceptedOrdersContainer.appendChild(orderCard);
                 }
             }
 
-            // Accept Order with Full Details
-            async function acceptOrder(orderId) {
-                try {
-                    const orderRef = doc(db, 'orders', orderId);
-                    const orderDoc = await getDoc(orderRef);
-
-                    if (orderDoc.exists()) {
-                        const orderDetails = orderDoc.data(); // Get all the details of the order
-
-                        // Store the full order details under the delivery partner's document
-                        const userRef = doc(db, 'deliveryPartners', currentUserEmail);
-                        await updateDoc(userRef, {
-                            [`ordersAccepted.${orderId}`]: {
-                                total: orderDetails.total,
-                                address: orderDetails.address,
-                                status: "Accepted",
-                                latitude: orderDetails.latitude,
-                                longitude: orderDetails.longitude,
-                                orderDate: orderDetails.orderDate || new Date().toISOString(),
-                                deliveryDeadline: orderDetails.deliveryDeadline || "Not Provided",
-                            },
-                        });
-
-                        alert(`Order ${orderId} accepted successfully!`);
-                        document.querySelector(`button[data-id="${orderId}"]`).disabled = true;
-
-                        // Optionally, update order status (if needed) to mark it as accepted in the orders collection
-                        await updateDoc(orderRef, {
-                            status: "Accepted",
-                            acceptedBy: currentUserEmail,
-                        });
-                    } else {
-                        alert(`Order ${orderId} not found!`);
-                    }
-                } catch (error) {
-                    console.error('Error accepting order:', error);
-                    alert('Failed to accept the order. Please try again.');
-                }
-            }
-
-            // Set Up Accept Button Handlers
-            function setupAcceptOrderHandlers() {
-                const buttons = document.querySelectorAll('.acceptBtn');
-                buttons.forEach((button) => {
-                    button.addEventListener('click', () => {
-                        const orderId = button.getAttribute('data-id');
-                        acceptOrder(orderId);
+            function startCamera(orderId) {
+                navigator.mediaDevices
+                    .getUserMedia({ video: { facingMode: "environment" } })
+                    .then((stream) => {
+                        videoContainer.style.display = "block";
+                        videoElement.srcObject = stream;
+                        scanQRCode(orderId);
+                    })
+                    .catch((err) => {
+                        console.error("Camera error:", err);
+                        alert("Unable to access the camera.");
                     });
-                });
             }
 
-            // Display Status Messages
-            function displayStatus(message, type) {
-                statusMessage.textContent = message;
-                statusMessage.className = `status ${type}`;
+            function stopCamera() {
+                videoContainer.style.display = "none";
+                const stream = videoElement.srcObject;
+                const tracks = stream.getTracks();
+
+                tracks.forEach((track) => track.stop());
+                videoElement.srcObject = null;
+
+                cancelAnimationFrame(scanAnimationFrame);
             }
 
-            // Fetch User Location
-            function fetchLocation(userName) {
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                            const { latitude, longitude } = pos.coords;
-                            document.getElementById('latitude').textContent = latitude.toFixed(4);
-                            document.getElementById('longitude').textContent = longitude.toFixed(4);
+            function scanQRCode(orderId) {
+                if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                    canvasElement.width = videoElement.videoWidth;
+                    canvasElement.height = videoElement.videoHeight;
+                    canvasContext.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
 
-                            fetchOrders(latitude, longitude);
-                        },
-                        (error) => {
-                            console.error('Geolocation error:', error);
-                            displayStatus('Unable to fetch location.', 'error');
+                    const imageData = canvasContext.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                    const qrCode = jsQR(imageData.data, canvasElement.width, canvasElement.height);
+
+                    if (qrCode) {
+                        if (qrCode.data === orderId) {
+                            outputElement.textContent = "Order Verified!";
+                            stopCamera();
+                            return;
+                        } else {
+                            outputElement.textContent = `QR Code Detected: ${qrCode.data}`;
                         }
-                    );
-                } else {
-                    displayStatus('Geolocation not supported.', 'error');
+                    }
                 }
-            }
-
-            // Calculate Distance
-            function calculateDistance(lat1, lon1, lat2, lon2) {
-                const R = 6371;
-                const dLat = ((lat2 - lat1) * Math.PI) / 180;
-                const dLon = ((lon2 - lon1) * Math.PI) / 180;
-
-                const a =
-                    Math.sin(dLat / 2) ** 2 +
-                    Math.cos((lat1 * Math.PI) / 180) *
-                        Math.cos((lat2 * Math.PI) / 180) *
-                        Math.sin(dLon / 2) ** 2;
-
-                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                return R * c;
+                scanAnimationFrame = requestAnimationFrame(() => scanQRCode(orderId));
             }
         });
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
 </body>
 </html>
