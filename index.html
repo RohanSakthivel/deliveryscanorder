@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Management</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="navbar-title">
+                <img src="logo.png" alt="Zoloww Logo">
+                <h1>Zoloww</h1>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section id="loginSection">
+            <h2>Delivery Hero Login</h2>
+            <form id="loginForm">
+                <input type="email" id="loginEmail" placeholder="Email" required>
+                <input type="password" id="loginPassword" placeholder="Password" required>
+                <button type="submit">Login</button>
+                <p>Not registered? <a href="registration.html">Register here</a>.</p>
+            </form>
+        </section>
+
+        <section id="dashboard" style="display: none;">
+            <h2 id="welcomeMessage">Welcome, <span id="userName"></span>! Vehicle: <span id="vehicleType"></span></h2>
+            <div id="locationDetails">
+                <p>Latitude: <span id="latitude"></span></p>
+                <p>Longitude: <span id="longitude"></span></p>
+            </div>
+            <div id="orderContainer"></div>
+            <div id="statusMessage"></div>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2024 Zoloww. All Rights Reserved.</p>
+    </footer>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getFirestore, doc, getDoc, updateDoc, collection, getDocs } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyD4_h-2b2_IjrfvSKOxHrL9gWotG-SanFo",
+            authDomain: "zolowworder.firebaseapp.com",
+            projectId: "zolowworder",
+            storageBucket: "zolowworder.appspot.com",
+            messagingSenderId: "996982358637",
+            appId: "1:996982358637:web:1adcf03392a68d5c6f3564",
+            measurementId: "G-4L2GTKRRMF"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const loginForm = document.getElementById('loginForm');
+            const orderContainer = document.getElementById('orderContainer');
+            const statusMessage = document.getElementById('statusMessage');
+            let currentUserEmail = '';
+
+            // Login Handler
+            loginForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const email = document.getElementById('loginEmail').value;
+                const password = document.getElementById('loginPassword').value;
+
+                try {
+                    const userRef = doc(db, 'deliveryPartners', email);
+                    const userDoc = await getDoc(userRef);
+
+                    if (userDoc.exists() && userDoc.data().password === password) {
+                        currentUserEmail = email;
+                        const userData = userDoc.data();
+
+                        document.getElementById('userName').textContent = userData.partnerName;
+                        document.getElementById('vehicleType').textContent = userData.vehicleType;
+                        document.getElementById('loginSection').style.display = 'none';
+                        document.getElementById('dashboard').style.display = 'block';
+
+                        fetchLocation(userData.partnerName);
+                    } else {
+                        displayStatus('Invalid email or password.', 'error');
+                    }
+                } catch (error) {
+                    console.error('Login error:', error);
+                    displayStatus('Login failed. Please try again.', 'error');
+                }
+            });
+
+            // Fetch Orders
+            async function fetchOrders(latitude, longitude) {
+                orderContainer.innerHTML = '';
+                try {
+                    const ordersSnap = await getDocs(collection(db, 'orders'));
+
+                    if (ordersSnap.empty) {
+                        displayStatus('No orders available.', 'info');
+                        return;
+                    }
+
+                    ordersSnap.forEach((docSnap) => {
+                        const order = docSnap.data();
+                        const orderId = docSnap.id;
+
+                        const distance = calculateDistance(
+                            latitude, longitude,
+                            order.latitude, order.longitude
+                        );
+
+                        if (distance <= 2) {
+                            const orderCard = document.createElement('div');
+                            orderCard.className = 'orderCard';
+                            orderCard.innerHTML = `
+                                <h3>Order ID: ${orderId}</h3>
+                                <p>Total: ₹${order.total || 0}</p>
+                                <p>Address: ${order.address || 'Not provided'}</p>
+                                <p>Distance: ${distance.toFixed(2)} km</p>
+                                <button class="acceptBtn" data-id="${orderId}">Accept Order</button>
+                            `;
+                            orderContainer.appendChild(orderCard);
+                        }
+                    });
+
+                    setupAcceptOrderHandlers();
+                } catch (error) {
+                    console.error('Error fetching orders:', error);
+                    displayStatus('Failed to load orders.', 'error');
+                }
+            }
+
+            // Accept Order with Full Details
+            async function acceptOrder(orderId) {
+                try {
+                    const orderRef = doc(db, 'orders', orderId);
+                    const orderDoc = await getDoc(orderRef);
+
+                    if (orderDoc.exists()) {
+                        const orderDetails = orderDoc.data(); // Get all the details of the order
+
+                        // Store the full order details under the delivery partner's document
+                        const userRef = doc(db, 'deliveryPartners', currentUserEmail);
+                        await updateDoc(userRef, {
+                            [`ordersAccepted.${orderId}`]: {
+                                total: orderDetails.total,
+                                address: orderDetails.address,
+                                status: "Accepted",
+                                latitude: orderDetails.latitude,
+                                longitude: orderDetails.longitude,
+                                orderDate: orderDetails.orderDate || new Date().toISOString(),
+                                deliveryDeadline: orderDetails.deliveryDeadline || "Not Provided",
+                            },
+                        });
+
+                        alert(`Order ${orderId} accepted successfully!`);
+                        document.querySelector(`button[data-id="${orderId}"]`).disabled = true;
+
+                        // Optionally, update order status (if needed) to mark it as accepted in the orders collection
+                        await updateDoc(orderRef, {
+                            status: "Accepted",
+                            acceptedBy: currentUserEmail,
+                        });
+                    } else {
+                        alert(`Order ${orderId} not found!`);
+                    }
+                } catch (error) {
+                    console.error('Error accepting order:', error);
+                    alert('Failed to accept the order. Please try again.');
+                }
+            }
+
+            // Set Up Accept Button Handlers
+            function setupAcceptOrderHandlers() {
+                const buttons = document.querySelectorAll('.acceptBtn');
+                buttons.forEach((button) => {
+                    button.addEventListener('click', () => {
+                        const orderId = button.getAttribute('data-id');
+                        acceptOrder(orderId);
+                    });
+                });
+            }
+
+            // Display Status Messages
+            function displayStatus(message, type) {
+                statusMessage.textContent = message;
+                statusMessage.className = `status ${type}`;
+            }
+
+            // Fetch User Location
+            function fetchLocation(userName) {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            const { latitude, longitude } = pos.coords;
+                            document.getElementById('latitude').textContent = latitude.toFixed(4);
+                            document.getElementById('longitude').textContent = longitude.toFixed(4);
+
+                            fetchOrders(latitude, longitude);
+                        },
+                        (error) => {
+                            console.error('Geolocation error:', error);
+                            displayStatus('Unable to fetch location.', 'error');
+                        }
+                    );
+                } else {
+                    displayStatus('Geolocation not supported.', 'error');
+                }
+            }
+
+            // Calculate Distance
+            function calculateDistance(lat1, lon1, lat2, lon2) {
+                const R = 6371;
+                const dLat = ((lat2 - lat1) * Math.PI) / 180;
+                const dLon = ((lon2 - lon1) * Math.PI) / 180;
+
+                const a =
+                    Math.sin(dLat / 2) ** 2 +
+                    Math.cos((lat1 * Math.PI) / 180) *
+                        Math.cos((lat2 * Math.PI) / 180) *
+                        Math.sin(dLon / 2) ** 2;
+
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                return R * c;
+            }
+        });
+    </script>
+</body>
+</html>
